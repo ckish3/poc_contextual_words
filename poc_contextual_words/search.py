@@ -2,7 +2,7 @@
 """
 
 
-For identifying words, I will assume that words do no mean punctuatuion or spaces.
+For identifying words, I will assume that words do no mean punctuation or spaces.
 
 I interpret "closely related word" to mean that the two words do not have to be the same stem with possibly different
 inflections, but they can be completely different words that mean very similar things (like synonyms). Ideally I would
@@ -263,16 +263,16 @@ def main():
     logger.info('Using model: %s' % model_name)
     logger.info('Using spacy model: %s' % spacy_model_name)
 
-    model = BertModel.from_pretrained(model_name)
+    model = BertModel.from_pretrained(model_name) #The model to create embeddings with
     tokenizer = BertTokenizer.from_pretrained(model_name)
 
-    spacy_model = spacy.load(spacy_model_name)
+    spacy_model = spacy.load(spacy_model_name) #the model to separate the text into words
 
     logger.info('Loading dictionary')
-    dictionary = load_dictionary('kara/dictionary.csv', tokenizer, model)
+    dictionary = load_dictionary('kara/dictionary.csv', tokenizer, model) #The dictionary of words & variants to point to
 
     logger.info('Creating search space')
-    index = create_search_space(dictionary)
+    index = create_search_space(dictionary) #The search space
 
     texts = ['Apple revenue grew. Apples are delicious tasting fruit. Deliciousness bald message!',
              'The quick brown fox jumps over the lazy dog.',
