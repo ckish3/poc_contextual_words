@@ -269,7 +269,7 @@ def main():
     spacy_model = spacy.load(spacy_model_name) #the model to separate the text into words
 
     logger.info('Loading dictionary')
-    dictionary = load_dictionary('kara/dictionary.csv', tokenizer, model) #The dictionary of words & variants to point to
+    dictionary = load_dictionary('./dictionary.csv', tokenizer, model) #The dictionary of words & variants to point to
 
     logger.info('Creating search space')
     index = create_search_space(dictionary) #The search space
