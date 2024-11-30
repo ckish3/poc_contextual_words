@@ -26,6 +26,11 @@ import numpy as np
 import spacy
 import pandas as pd
 
+import transformers
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
+import re
+import json 
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -213,7 +218,7 @@ def create_search_space(dictionary: pd.DataFrame) -> Index:
     return index
 
 
-def conduct_searches(index: Index, embeddings: Dict[int, np.ndarray], threshold: float = 1) -> Dict[int, int]:
+def conduct_vector_searches(index: Index, embeddings: Dict[int, np.ndarray], number_results: int = 5, threshold: float = 1) -> Dict[int, int]:
     """
     Conducts searches for the embeddings in the search space
 
@@ -221,22 +226,71 @@ def conduct_searches(index: Index, embeddings: Dict[int, np.ndarray], threshold:
         index (Index): The search space
         embeddings (dict): A dictionary where the key is the index of the word and the value is the embedding of the
             word
+        number_results (int): The number of results for each word to return
         threshold (float): The threshold for a match. A distance above this value results in no match for the word
 
     Returns:
-        dict: A dictionary where the key is the index of the word and the value is the line number in the dictionary CSV
-            of the closest match. If there is no match, the value is None.
+        dict: A dictionary where the key is the index of the word and the value is a list of the line numbers in the dictionary CSV
+            of the closest matches. If there is no match, the value is an empty list.
     """
 
     search_results = {}
     for word_index, embedding in embeddings.items():
-        neighbors, distances = index.query(embedding, k=1)
-        if distances[0] < threshold:
-            search_results[word_index] = neighbors[0]
-        else:
-            search_results[word_index] = None
+        neighbors, distances = index.query(embedding, k=number_results)
+        search_results[word_index] = []
+
+        for i in range(len(distances)):
+            if distances[i] < threshold:
+                search_results[word_index].append(neighbors[i])
 
     return search_results
+
+
+def conduct_llm_searches(dictionary: pd.DataFrame, vector_search_results: Dict[int, List[int]], text: str, words: List[str], llm_model, llm_tokenizer, device) -> Dict[int, int]:
+    """
+    Conducts searches for the embeddings in the search space
+
+    Args:
+        index (Index): The search space
+        dictionary (pd.DataFrame): The dictionary of potential word variants
+        vector_search_results (dict): A dictionary where the key is the index of the word and the value is a list of the
+            line numbers in the dictionary CSV of the closest matches.
+    Returns:
+        dict: A dictionary where the key is the index of the word and the value is a list of the line numbers in the dictionary CSV
+            of the closest matches. If there is no match, the value is an empty list.
+    """
+
+    results = []
+    for i in list(vector_search_results.keys()):
+        if len(vector_search_results[i]) == 0:
+            print(f'{words[i]}: has no match in the dictionary')
+            continue
+
+        word = words[i]
+
+        prompt = f"""What is the best definition of "{word}" in the text "{text}"? The options are: """
+
+        for line_number in vector_search_results[i]:
+            definition = dictionary[dictionary['line_number'] == line_number]['definition'].values[0]
+            prompt += f"""
+{line_number}: {definition}"""
+
+        prompt += """
+    Output only the definition number.
+    """
+        messages = [
+            {"role": "system", "content": "You are a tool to find the best definition of a word in a text. For every word, you will be given several options of definitions. Choose the best option of the definition for the word as it is used in that text."},
+            {"role": "user", "content": prompt}
+        ]
+
+        input_text=llm_tokenizer.apply_chat_template(messages, tokenize=False)
+        inputs = llm_tokenizer.encode(input_text, return_tensors="pt").to(device)
+        llm_outputs = llm_model.generate(inputs, max_new_tokens=50, temperature=0.2, top_p=0.9, do_sample=True)
+
+        results.append(parse_response(llm_tokenizer.decode(llm_outputs[0])))
+
+    return results
+
 
 def embed_row(row: pd.Series, tokenizer: BertTokenizer, model: BertModel) -> np.ndarray:
     """
@@ -256,17 +310,44 @@ def embed_row(row: pd.Series, tokenizer: BertTokenizer, model: BertModel) -> np.
     return embedding
 
 
+def parse_response(text: str) -> str:
+    """Parses a response from the model, returning either the
+    parsed list with the tool calls parsed, or the
+    model thought or response if couldn't generate one.
+
+    Args:
+        text: Response from the model.
+    """
+    pattern = r"<|im_start|>assistant\n(.*?)<|im_end|>"
+    matches = re.findall(pattern, text, re.DOTALL)
+    if matches:
+        matches = [m for m in matches if len(m) > 0]
+        return matches[0]
+    return text
+
+
 def main():
     model_name = 'bert-base-uncased'
-    spacy_model_name = 'en_core_web_trf'
+    spacy_model_name = 'en_core_web_md'
+    llm_model_name = "HuggingFaceTB/SmolLM2-1.7B-Instruct"
+ #"meta-llama/Meta-Llama-3.1-8B-Instruct"
+
+    device = 'cpu'
 
     logger.info('Using model: %s' % model_name)
     logger.info('Using spacy model: %s' % spacy_model_name)
+    logger.info('Using LLM model: %s' % llm_model_name)
+
 
     model = BertModel.from_pretrained(model_name) #The model to create embeddings with
     tokenizer = BertTokenizer.from_pretrained(model_name)
 
     spacy_model = spacy.load(spacy_model_name) #the model to separate the text into words
+
+    llm_tokenizer = AutoTokenizer.from_pretrained(llm_model_name)
+    
+    llm_model = AutoModelForCausalLM.from_pretrained(llm_model_name).to(device)
+
 
     logger.info('Loading dictionary')
     dictionary = load_dictionary('./dictionary.csv', tokenizer, model) #The dictionary of words & variants to point to
@@ -274,7 +355,7 @@ def main():
     logger.info('Creating search space')
     index = create_search_space(dictionary) #The search space
 
-    texts = ['Apple revenue grew. Apples are delicious tasting fruit. Deliciousness bald message!',
+    texts = ['Apple revenue grew. Apples are delicious tasting fruit.',
              'The quick brown fox jumps over the lazy dog.',
              'The balance beam is the hardest discipline in gymnastics.',
              'The Amazon rainforest has a lot of trees.']
@@ -293,13 +374,16 @@ def main():
         embedding_map = embed_words(token_mapping, tokens, tokenizer, model)
 
         logger.info('Conducting searches for words')
-        search_results = conduct_searches(index, embedding_map, threshold=100)
+        search_results = conduct_vector_searches(index, embedding_map, threshold=100)
 
-        for word_index, line_number in search_results.items():
-            if line_number is not None:
-                print(f'{words[word_index]}: has a match in the dictionary at line {line_number}')
-            else:
-                print(f'{words[word_index]}: has no match in the dictionary')
+        conduct_llm_searches(dictionary, search_results, text, words, llm_model, llm_tokenizer, device)
+    
+#        for word_index, line_number in search_results.items():
+#            if line_number is not None:
+#                print(f'{words[word_index]}: has a match in the dictionary at line {line_number}')
+#                print(dictionary[dictionary['line_number'] == line_number]['definition'].values[0])
+#            else:
+#                print(f'{words[word_index]}: has no match in the dictionary')
 
 
 
