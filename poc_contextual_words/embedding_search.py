@@ -1,3 +1,10 @@
+""" 
+This module contains a class that find the best N definitions for each word in a text
+by creating an embedding for each word in the text and each word in a reference dictionary.
+It than conducts a nearest-neighbor vector search between each word's embedding and the embeddings
+of the words in the reference dictionary.
+"""
+
 
 from typing import List, Dict
 import logging
@@ -14,13 +21,20 @@ logger = logging.getLogger(__name__)
 
 
 class EmbeddingSearch:
-    def __init__(self, model_name, spacy_model_name):
+    def __init__(self, model_name: str, spacy_model_name: str):
         self._model_name = model_name
         self._spacy_model_name = spacy_model_name
         self._model = BertModel.from_pretrained(model_name) #The model to create embeddings with
         self._tokenizer = BertTokenizer.from_pretrained(model_name)
 
         self._spacy_model = spacy.load(spacy_model_name) #the model to separate the text into words
+
+        self.reset()
+
+
+    def reset(self) -> None:
+        self._search_results = None
+        self._words = None
 
 
     def map_tokens_to_words(self, tokens: List[str], words: List[str]) -> Dict[int, List[int]]:
@@ -67,7 +81,7 @@ class EmbeddingSearch:
 
         return word_to_tokens
 
-    def get_words(self, text: str) -> List[str]:
+    def separate_words(self, text: str) -> None:
         """
         Returns a list of words in the text
 
@@ -81,7 +95,7 @@ class EmbeddingSearch:
         doc = self._spacy_model(text)
         words = [token.text.lower() for token in doc if not token.is_punct and not token.is_space]
 
-        return words
+        self._words = words
 
 
     def tokenize_text(self, text: str) -> List[str]:
@@ -149,7 +163,7 @@ class EmbeddingSearch:
         return embeddings
 
 
-    def embed_row(self, row: pd.Series) -> np.ndarray:
+    def embed_row(self, row: pd.Series) -> list:
         """
         Embeds a row of a dataframe
 
@@ -157,7 +171,7 @@ class EmbeddingSearch:
             row (pd.Series): The row to embed
 
         Returns:
-            np.ndarray: The embedding of the row
+            list: The embedding of the row
         """
 
         embedding = list(self.embed_tokens(row['all_tokens'], tokens_to_keep=row['num_tokens']))
@@ -165,18 +179,17 @@ class EmbeddingSearch:
         return embedding
 
 
-    def load_dictionary(self, path: str) -> pd.DataFrame:
+    def load_dictionary(self, dictionary: pd.DataFrame) -> pd.DataFrame:
         """
         Loads the given dictionary from a file. It makes all words lowercase and adds a line number column.
 
         Args:
-            path (str): The path to the file
+            dictionary (pd.DataFrame): The dictionary as a pandas Dataframe with the columns 'word' and definition'
 
         Returns:
             pd.DataFrame: The dictionary
         """
 
-        dictionary = pd.read_csv(path)
         dictionary['word'] = dictionary['word'].apply(lambda x: x.lower())
         dictionary['line_number'] = range(2, len(dictionary.index) + 2)
 
@@ -214,8 +227,22 @@ class EmbeddingSearch:
 
 
 
-    def search(self, text, threshold=100, number_results=5):
-        words = self.get_words(text)
+    def search(self, text: str, dictionary: dict, threshold=100, number_results=5) -> None:
+        """ 
+        Searches for the best definition in the dictionaryfor each word in the text to the dictionary
+
+        Args:
+            text (str): The text to search
+            dictionary (dict): The reference dictionary of words & variants to point to
+            threshold (int): The maximum distance in the vector search in order to keep a result. 
+                Default is 100
+            number_results (int): The number of results (potential definitions) for each word to return. 
+                Default is 5
+        """
+        
+        self.reset()
+        self.separate_words(text)
+        words = self.get_words()
 
         logger.info('Tokenizing text')
         tokens = self.tokenize_text(text)
@@ -226,7 +253,7 @@ class EmbeddingSearch:
         embedding_map = self.embed_words(token_mapping, tokens)
 
         logger.info('Loading dictionary')
-        dictionary = self.load_dictionary('./dictionary.csv') #The dictionary of words & variants to point to
+        dictionary = self.load_dictionary(dictionary) #The dictionary of words & variants to point to
 
         logger.info('Creating search space')
         index = self.create_search_space(dictionary) #The search space
@@ -241,5 +268,16 @@ class EmbeddingSearch:
                 if distances[i] < threshold:
                     search_results[word_index].append(neighbors[i])
 
-        return search_results
+        self._search_results = search_results
 
+    def get_search_results(self):
+        if self._search_results is None:
+            raise Exception('You must call search() first')
+
+        return self._search_results
+
+    def get_words(self):
+        if self._words is None:
+            raise Exception('You must call search() first')
+
+        return self._words
