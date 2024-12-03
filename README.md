@@ -13,4 +13,4 @@ It would identify that "Amazon" refers to the business, while in the text:
 
 It would identify that "Amazon" refers to the rainforest.
 
-Currently, as a proof-of-concept, the text is a few examples hard-coded in search.py. Obviously, in a production system, this would not be the case.
+Currently, as a proof-of-concept, the text is a few examples hard-coded in search.py. Also, the dictionary file has exact duplicates (the word and definitions exactly match) and near matches (the definitions mean the same thing but the wording differs). Obviously, in a production system, this would not be the case.
